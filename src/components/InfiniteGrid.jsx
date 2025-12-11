@@ -3,9 +3,10 @@ import React, { useRef, useEffect } from "react";
 import gsap from "gsap";
 import { Draggable } from "gsap/Draggable";
 import { InertiaPlugin } from "gsap/InertiaPlugin";
+import { Observer } from "gsap/Observer";
 import { useGSAP } from "@gsap/react";
 
-gsap.registerPlugin(Draggable, InertiaPlugin, useGSAP);
+gsap.registerPlugin(Draggable, InertiaPlugin, useGSAP, Observer);
 
 const gridConfig = {
     boxSize: 200,
@@ -49,12 +50,41 @@ const InfiniteGrid = () => {
 
         const proxy = document.createElement("div");
 
-        Draggable.create(proxy, {
+        const draggable = Draggable.create(proxy, {
             trigger: wrapper,
             type: "x,y",
             inertia: true,
-            onDrag: updateProgress,
-            onThrowUpdate: updateProgress
+            onDrag: function () { updateProgress(this.x, this.y, this.deltaX, this.deltaY) },
+            onThrowUpdate: function () { updateProgress(this.x, this.y, this.deltaX, this.deltaY) }
+        })[0];
+
+        // Connect wheel/touch scaling to the draggable proxy
+        Observer.create({
+            target: wrapper,
+            type: "wheel,touch",
+            onChange: (self) => {
+                // Get the current proxy position
+                const currentX = gsap.getProperty(proxy, "x");
+                const currentY = gsap.getProperty(proxy, "y");
+
+                // Update proxy position based on scroll delta
+                // Invert deltaY for natural scroll feel usually, but depends on preference.
+                // Standard scroll: Wheel Down (positive delta) -> Content moves Up (negative Y)
+                const newX = currentX - self.deltaX;
+                const newY = currentY - self.deltaY;
+
+                // Apply change to proxy immediately so draggable tracks it
+                gsap.set(proxy, { x: newX, y: newY });
+
+                // Important: Update Draggable's internal recording so inertia works correctly if you throw after scrolling
+                draggable.update();
+
+                // Manually calculating delta for blur
+                const vX = -self.deltaX;
+                const vY = -self.deltaY;
+
+                updateProgress(newX, newY, vX, vY);
+            }
         });
 
         // Wrap logic: range must be exactly gridWidth/gridHeight
@@ -62,9 +92,12 @@ const InfiniteGrid = () => {
         const wrapX = gsap.utils.wrap(-gridWidth / 2, gridWidth / 2);
         const wrapY = gsap.utils.wrap(-gridHeight / 2, gridHeight / 2);
 
-        function updateProgress() {
-            const dragX = this.x;
-            const dragY = this.y;
+        function updateProgress(x, y, vX, vY) {
+            const dragX = x;
+            const dragY = y;
+
+            const velocityX = vX;
+            const velocityY = vY;
 
             boxes.forEach((box, i) => {
                 const col = i % gridConfig.numCols;
@@ -92,12 +125,9 @@ const InfiniteGrid = () => {
                 const dy = Math.abs(boxCenter.y - screenCenter.y);
 
                 // Define visible boundaries
-                // Start fading much earlier to make it "more visible"
-                // e.g., only keep the center 40% fully opaque
                 const xThreshold = window.innerWidth / 2;
                 const yThreshold = window.innerHeight / 2;
 
-                // Fade starts at 30% of screen dimension from center, ends at edge
                 const fadeStartX = xThreshold * 0.3;
                 const fadeEndX = xThreshold * 0.9;
 
@@ -108,36 +138,26 @@ const InfiniteGrid = () => {
                 const opacityY = gsap.utils.mapRange(fadeStartY, fadeEndY, 1, 0.4, dy);
 
                 // Use min instead of multiply to avoid double-fading corners
-                // Motion Blur / Skew Effect
-                // Use delta since last frame to estimate velocity
-                // Clamp skew to prevent extreme distortion
-                // Note: dragX - this.x is 0 because this.x IS dragX in this frame.
-                // We need velocity from tracker or delta.
-                // Draggable provides deltaX/deltaY in the instance.
-
-                const velocityX = this.deltaX;
-                const velocityY = this.deltaY;
+                const opacity = gsap.utils.clamp(0.4, 1, Math.min(opacityX, opacityY));
 
                 // Apply subtle scale/skew based on velocity
                 const stretchX = Math.abs(velocityX) * 0.005;
                 const stretchY = Math.abs(velocityY) * 0.005;
 
-                // We can use scale to "stretch" in direction of movement
-                // Or skew. Skew feels more "fast".
-
-                const opacity = gsap.utils.clamp(0.4, 1, Math.min(opacityX, opacityY));
-
                 gsap.set(box, {
                     x,
                     y,
                     opacity,
-                    skewX: velocityX * 0.2, // Reduced sensitivity
+                    skewX: velocityX * 0.2,
                     skewY: velocityY * 0.2,
                     scaleX: 1 + stretchX,
                     scaleY: 1 + stretchY
                 });
             });
         }
+
+        // Initial setup
+        updateProgress(0, 0, 0, 0);
 
     }, { scope: wrapperRef });
 
